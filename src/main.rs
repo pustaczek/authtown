@@ -17,7 +17,7 @@ fn run_async() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let database_url = env!("DATABASE_URL");
+    let database_url = std::env::var("DATABASE_URL")?;
     let database_config = database_url.parse::<tokio_postgres::Config>()?;
     let (database, database_task) = database_config.connect(NoTls).await?;
     let database = Arc::new(database);
