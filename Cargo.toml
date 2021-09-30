@@ -9,6 +9,10 @@ cookie = "0.15"
 hyper = { version = "0.14", features = ["http1", "runtime", "server"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+slog = "2"
+slog-async = "2"
+slog-term = "2"
 thiserror = "1"
 tokio = "1"
 tokio-postgres = "0.7"
+uuid = { version = "0.8", features = ["v4"] }
