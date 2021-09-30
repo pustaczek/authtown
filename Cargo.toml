@@ -6,3 +6,4 @@ edition = "2018"
 [dependencies]
 hyper = { version = "0.14", features = ["http1", "runtime", "server"] }
 tokio = "1"
+tokio-postgres = "0.7"
