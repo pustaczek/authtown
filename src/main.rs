@@ -2,11 +2,10 @@
 
 mod error;
 mod session;
+mod user;
 
 use crate::session::Session;
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::SaltString;
-use argon2::{Argon2, PasswordHasher};
+use crate::user::UserStore;
 use cookie::Cookie;
 use error::Error;
 use hyper::header::{COOKIE, SET_COOKIE};
@@ -124,25 +123,15 @@ async fn router(
         (&Method::POST, "/auth/register") => {
             let body: AuthRegisterRequest =
                 serde_json::from_slice(&hyper::body::to_bytes(req.body_mut()).await?)?;
-            let argon2 = Argon2::default();
-            let salt = SaltString::generate(OsRng);
-            let hash = argon2
-                .hash_password(body.password.as_bytes(), &salt)
-                .unwrap();
             info!(log, "Registering a new account"; "username" => &body.username);
-            let row = database
-                .query_one(
-                    "INSERT INTO users (username, password_phc) VALUES ($1, $2) RETURNING id;",
-                    &[&body.username, &hash.to_string()],
-                )
-                .await?;
-            let user_id: i32 = row.get(0);
-            let session = Session { user_id };
+            let user_store = UserStore::new(&*database);
+            let user = user_store.insert(&body.username, &body.password).await?;
+            let session = Session { user };
             info!(log, "Logging in"; &session);
             Ok(Response::builder()
                 .status(StatusCode::OK)
                 .header(SET_COOKIE, session.cookie_login().to_string())
-                .body(user_id.to_string().into())
+                .body(Body::empty())
                 .unwrap())
         }
         (&Method::POST, "/auth/logout") => {

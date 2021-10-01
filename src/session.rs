@@ -1,11 +1,12 @@
 use crate::error::Error;
+use crate::user::User;
 use cookie::{Cookie, SameSite};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::time::Duration;
 
 pub struct Session {
-    pub user_id: i32,
+    pub user: User,
 }
 
 const EXPIRATION_TIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
@@ -14,7 +15,9 @@ impl Session {
     pub fn from_cookies(cookies: &HashMap<&str, Cookie>) -> Result<Option<Session>, Error> {
         let Some(cookie) = cookies.get("session") else { return Ok(None); };
         let user_id = cookie.value().parse()?;
-        Ok(Some(Session { user_id }))
+        Ok(Some(Session {
+            user: User { id: user_id },
+        }))
     }
 
     pub fn cookie_login(&self) -> Cookie {
@@ -32,7 +35,7 @@ impl slog::KV for Session {
         _record: &slog::Record,
         serializer: &mut dyn slog::Serializer,
     ) -> slog::Result {
-        serializer.emit_i32("session", self.user_id)
+        serializer.emit_i32("session", self.user.id)
     }
 }
 
@@ -42,7 +45,7 @@ fn cookie_raw(session: Option<&Session>, max_age: Duration) -> Cookie {
     // TODO: Encrypt the cookie, or store sessions in the database.
     Cookie::build(
         "session",
-        session.map_or(String::new(), |session| session.user_id.to_string()),
+        session.map_or(String::new(), |session| session.user.id.to_string()),
     )
     .max_age(max_age.try_into().unwrap())
     .secure(true)
