@@ -19,6 +19,8 @@ pub enum Error {
     Json(#[from] serde_json::Error, Backtrace),
     #[error("IO error")]
     Io(#[from] std::io::Error, Backtrace),
+    #[error("HTML templating error")]
+    HtmlTemplate(#[from] tera::Error, Backtrace),
 }
 
 impl Error {

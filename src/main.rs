@@ -18,6 +18,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
+use tera::Tera;
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 
@@ -58,17 +59,19 @@ async fn run(log: Logger) -> Result<(), Error> {
     let database_config = database_url.parse::<tokio_postgres::Config>()?;
     let (database, database_task) = database_config.connect(NoTls).await?;
     let database = Arc::new(database);
+    let tera = Arc::new(Tera::new("templates/*.html")?);
     let address = SocketAddr::from(([127, 0, 0, 1], 8000));
     let service_factory = make_service_fn(|conn: &AddrStream| {
         let log = log.clone();
         let database = database.clone();
+        let tera = tera.clone();
         let conn_ip = conn.remote_addr().ip();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let req_id = Uuid::new_v4();
                 let req_log = log.new(o!("request" => req_id.to_string()));
                 info!(req_log, "HTTP request received"; "method" => req.method().to_string(), "endpoint" => req.uri().to_string(), "ip" => conn_ip.to_string());
-                catcher(req, database.clone(), req_log)
+                catcher(req, database.clone(), tera.clone(), req_log)
             }))
         }
     });
@@ -81,9 +84,10 @@ async fn run(log: Logger) -> Result<(), Error> {
 async fn catcher(
     req: Request<Body>,
     database: Arc<tokio_postgres::Client>,
+    tera: Arc<Tera>,
     log: Logger,
 ) -> Result<Response<Body>, Error> {
-    match router(req, database, &log).await {
+    match router(req, database, tera, &log).await {
         Ok(resp) => {
             info!(log, "HTTP request successful"; "status" => resp.status().as_u16());
             Ok(resp)
@@ -101,9 +105,15 @@ async fn catcher(
 async fn router(
     mut req: Request<Body>,
     database: Arc<tokio_postgres::Client>,
+    tera: Arc<Tera>,
     log: &Logger,
 ) -> Result<Response<Body>, Error> {
+    let context = tera::Context::new();
     match (req.method(), req.uri().path()) {
+        (&Method::GET, "/") => Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(tera.render("index.html", &context)?.into())
+            .unwrap()),
         (&Method::POST, "/auth/register") => {
             let body: AuthRegisterRequest =
                 serde_json::from_slice(&hyper::body::to_bytes(req.body_mut()).await?)?;
