@@ -21,6 +21,12 @@ pub enum Error {
     Io(#[from] std::io::Error, Backtrace),
     #[error("HTML templating error")]
     HtmlTemplate(#[from] tera::Error, Backtrace),
+    #[error("UTF-8 HTTP header decoding failed")]
+    Utf8Decoding(#[from] hyper::header::ToStrError, Backtrace),
+    #[error("cookie parse error")]
+    Parse(#[from] cookie::ParseError, Backtrace),
+    #[error("integer parse error")]
+    IntParse(#[from] std::num::ParseIntError, Backtrace),
 }
 
 impl Error {

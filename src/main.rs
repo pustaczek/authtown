@@ -1,7 +1,9 @@
-#![feature(backtrace)]
+#![feature(backtrace, let_else)]
 
 mod error;
+mod session;
 
+use crate::session::Session;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHasher};
@@ -14,10 +16,10 @@ use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use serde::Deserialize;
 use slog::{error, info, o, Drain, Logger};
 use std::backtrace::Backtrace;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 use tera::Tera;
 use tokio_postgres::NoTls;
 use uuid::Uuid;
@@ -27,8 +29,6 @@ struct AuthRegisterRequest {
     username: String,
     password: String,
 }
-
-const SESSION_EXPIRE_TIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 
 fn main() {
     let log = init_logger();
@@ -108,6 +108,13 @@ async fn router(
     tera: Arc<Tera>,
     log: &Logger,
 ) -> Result<Response<Body>, Error> {
+    let cookies = get_cookies(&req)?;
+    let session = Session::from_cookies(&cookies)?;
+    if let Some(session) = &session {
+        info!(log, "User is logged in"; session);
+    } else {
+        info!(log, "User is not logged in");
+    }
     let context = tera::Context::new();
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") => Ok(Response::builder()
@@ -130,33 +137,21 @@ async fn router(
                 )
                 .await?;
             let user_id: i32 = row.get(0);
+            let session = Session { user_id };
+            info!(log, "Logging in"; &session);
             Ok(Response::builder()
                 .status(StatusCode::OK)
-                .header(SET_COOKIE, session_cookie(user_id, SESSION_EXPIRE_TIME))
+                .header(SET_COOKIE, session.cookie_login().to_string())
                 .body(user_id.to_string().into())
                 .unwrap())
         }
         (&Method::POST, "/auth/logout") => {
-            let cookies = req.headers().get(COOKIE).unwrap();
-            let cookie = Cookie::parse(cookies.to_str().unwrap()).unwrap();
-            if cookie.name() == "session" {
-                match cookie.value().parse::<i32>() {
-                    Ok(user_id) => Ok(Response::builder()
-                        .status(StatusCode::OK)
-                        .header(SET_COOKIE, session_cookie(user_id, Duration::ZERO))
-                        .body(Body::empty())
-                        .unwrap()),
-                    Err(e) => Ok(Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(e.to_string().into())
-                        .unwrap()),
-                }
-            } else {
-                Ok(Response::builder()
-                    .status(StatusCode::OK)
-                    .body("Already logged out".into())
-                    .unwrap())
-            }
+            info!(log, "Logging out");
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(SET_COOKIE, Session::cookie_logout().to_string())
+                .body(Body::empty())
+                .unwrap())
         }
         _ => Ok(Response::builder()
             .status(StatusCode::NOT_FOUND)
@@ -165,15 +160,13 @@ async fn router(
     }
 }
 
-fn session_cookie(user_id: i32, max_age: Duration) -> String {
-    // Default SameSite is specified to be Lax, but some browsers (Firefox) haven't made the switch
-    // from None to Lax yet.
-    // TODO: Encrypt the cookie, or store sessions in the database.
-    format!(
-        "session={}; Max-Age={}; Secure; HttpOnly; SameSite=Lax",
-        user_id,
-        max_age.as_secs()
-    )
+fn get_cookies(request: &Request<Body>) -> Result<HashMap<&str, Cookie>, Error> {
+    let Some(header) = request.headers().get(COOKIE) else { return Ok(HashMap::new()); };
+    Ok(header
+        .to_str()?
+        .split("; ")
+        .map(|cookie| Cookie::parse(cookie).map(|cookie| (cookie.name_raw().unwrap(), cookie)))
+        .collect::<Result<HashMap<_, _>, _>>()?)
 }
 
 fn env_var(name: &'static str) -> Result<String, Error> {
