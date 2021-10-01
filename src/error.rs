@@ -1,3 +1,4 @@
+use hmac::crypto_mac::MacError;
 use slog::SingleKV;
 use std::backtrace::Backtrace;
 use std::error::Error as StdError;
@@ -27,6 +28,12 @@ pub enum Error {
     Parse(#[from] cookie::ParseError, Backtrace),
     #[error("integer parse error")]
     IntParse(#[from] std::num::ParseIntError, Backtrace),
+    #[error("hex decode error")]
+    HexDecode(#[from] hex::FromHexError, Backtrace),
+    #[error("crypto signature verification failed")]
+    CryptoSignatureVerification(#[from] MacError, Backtrace),
+    #[error("uuid parse error")]
+    UuidParse(#[from] uuid::Error, Backtrace),
 }
 
 impl Error {

@@ -8,7 +8,7 @@ use tokio_postgres::GenericClient;
 #[derive(Deserialize, Serialize)]
 #[serde(transparent)]
 pub struct User {
-    id: i32,
+    pub id: i32,
 }
 
 pub struct UserStore<'d, D: GenericClient> {
