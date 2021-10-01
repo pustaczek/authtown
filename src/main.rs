@@ -1,18 +1,23 @@
+#![feature(backtrace)]
+
+mod error;
+
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::SaltString;
 use argon2::{Argon2, PasswordHasher};
 use cookie::Cookie;
+use error::Error;
 use hyper::header::{COOKIE, SET_COOKIE};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
 use serde::Deserialize;
 use slog::{error, info, o, Drain, Logger};
+use std::backtrace::Backtrace;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use thiserror::Error;
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 
@@ -22,34 +27,23 @@ struct AuthRegisterRequest {
     password: String,
 }
 
-#[derive(Debug, Error)]
-enum Error {
-    #[error("database failure")]
-    Database(#[from] tokio_postgres::Error),
-    #[error("http error")]
-    Http(#[from] hyper::Error),
-    #[error("environment variable missing")]
-    Environment(#[from] std::env::VarError),
-    #[error("json deserialization error")]
-    Json(#[from] serde_json::Error),
-    #[error("IO error")]
-    Io(#[from] std::io::Error),
-}
-
 const SESSION_EXPIRE_TIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 
 fn main() {
-    let instance_id = Uuid::new_v4();
-    let log = init_logger(instance_id);
-    info!(log, "Launching server"; "version" => env!("CARGO_PKG_VERSION"));
-    run_async(log).unwrap();
+    let log = init_logger();
+    match run_async(log.clone()) {
+        Ok(()) => (),
+        Err(e) => {
+            error!(log, "Critical server failure"; e.log_message(), e.log_backtrace());
+        }
+    }
 }
 
-fn init_logger(instance_id: Uuid) -> Logger {
+fn init_logger() -> Logger {
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::CompactFormat::new(decorator).build().fuse();
     let drain = slog_async::Async::new(drain).build().fuse();
-    Logger::root(drain, o!("instance" => instance_id.to_string()))
+    Logger::root(drain, o!())
 }
 
 fn run_async(log: Logger) -> Result<(), Error> {
@@ -60,27 +54,27 @@ fn run_async(log: Logger) -> Result<(), Error> {
 }
 
 async fn run(log: Logger) -> Result<(), Error> {
-    let database_url = std::env::var("DATABASE_URL")?;
+    let database_url = env_var("DATABASE_URL")?;
     let database_config = database_url.parse::<tokio_postgres::Config>()?;
     let (database, database_task) = database_config.connect(NoTls).await?;
     let database = Arc::new(database);
     let address = SocketAddr::from(([127, 0, 0, 1], 8000));
     let service_factory = make_service_fn(|conn: &AddrStream| {
-        let conn_id = Uuid::new_v4();
-        let conn_log = log.new(o!("connection" => conn_id.to_string()));
-        info!(conn_log, "Connection accepted"; "ip" => conn.remote_addr());
+        let log = log.clone();
         let database = database.clone();
+        let conn_ip = conn.remote_addr().ip();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
                 let req_id = Uuid::new_v4();
-                let req_log = conn_log.new(o!("request" => req_id.to_string()));
-                info!(req_log, "HTTP request received"; "method" => req.method().to_string(), "endpoint" => req.uri().to_string());
+                let req_log = log.new(o!("request" => req_id.to_string()));
+                info!(req_log, "HTTP request received"; "method" => req.method().to_string(), "endpoint" => req.uri().to_string(), "ip" => conn_ip.to_string());
                 catcher(req, database.clone(), req_log)
             }))
         }
     });
     let server = Server::bind(&address).serve(service_factory);
     tokio::spawn(database_task);
+    info!(log, "Listening on http://{}", address);
     Ok(server.await?)
 }
 
@@ -89,10 +83,13 @@ async fn catcher(
     database: Arc<tokio_postgres::Client>,
     log: Logger,
 ) -> Result<Response<Body>, Error> {
-    match router(req, database, log).await {
-        Ok(resp) => Ok(resp),
+    match router(req, database, &log).await {
+        Ok(resp) => {
+            info!(log, "HTTP request successful"; "status" => resp.status().as_u16());
+            Ok(resp)
+        }
         Err(e) => {
-            println!("{:#?}", e);
+            error!(log, "HTTP request failed"; "status" => 500, e.log_message(), e.log_backtrace());
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(e.to_string().into())
@@ -104,7 +101,7 @@ async fn catcher(
 async fn router(
     mut req: Request<Body>,
     database: Arc<tokio_postgres::Client>,
-    log: Logger,
+    log: &Logger,
 ) -> Result<Response<Body>, Error> {
     match (req.method(), req.uri().path()) {
         (&Method::POST, "/auth/register") => {
@@ -167,4 +164,15 @@ fn session_cookie(user_id: i32, max_age: Duration) -> String {
         user_id,
         max_age.as_secs()
     )
+}
+
+fn env_var(name: &'static str) -> Result<String, Error> {
+    match std::env::var(name) {
+        Ok(value) => Ok(value),
+        Err(source) => Err(Error::Environment {
+            name,
+            source,
+            backtrace: Backtrace::capture(),
+        }),
+    }
 }
