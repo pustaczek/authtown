@@ -107,6 +107,7 @@ fn cookie_raw(session: Option<&Session>, max_age: Duration) -> Cookie {
         }),
     )
     .max_age(max_age.try_into().unwrap())
+    .path("/")
     .secure(true)
     .http_only(true)
     .same_site(SameSite::Lax)

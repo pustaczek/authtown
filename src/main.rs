@@ -12,11 +12,11 @@ use crate::user::UserStore;
 use crate::util::env_var;
 use cookie::Cookie;
 use error::Error;
-use hyper::header::{COOKIE, SET_COOKIE};
+use hyper::header::{COOKIE, LOCATION, SET_COOKIE};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use slog::{error, info, o, Drain, Logger};
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -30,6 +30,16 @@ use uuid::Uuid;
 struct AuthRegisterRequest {
     username: String,
     password: String,
+}
+
+#[derive(Serialize)]
+struct Ctx {
+    user: Option<CtxUser>,
+}
+
+#[derive(Serialize)]
+struct CtxUser {
+    id: i32,
 }
 
 fn main() {
@@ -121,22 +131,27 @@ async fn router(
     } else {
         info!(log, "User is not logged in");
     }
-    let context = tera::Context::new();
+    let context = tera::Context::from_serialize(Ctx {
+        user: session.as_ref().map(|session| CtxUser {
+            id: session.user().id,
+        }),
+    })?;
     match (req.method(), req.uri().path()) {
         (&Method::GET, "/") => Ok(Response::builder()
             .status(StatusCode::OK)
             .body(tera.render("index.html", &context)?.into())
             .unwrap()),
         (&Method::POST, "/auth/register") => {
-            let body: AuthRegisterRequest =
-                serde_json::from_slice(&hyper::body::to_bytes(req.body_mut()).await?)?;
+            let body_bytes = hyper::body::to_bytes(req.body_mut()).await?;
+            let body: AuthRegisterRequest = serde_urlencoded::from_bytes(&body_bytes)?;
             info!(log, "Registering a new account"; "username" => &body.username);
             let user_store = UserStore::new(&*database);
             let user = user_store.insert(&body.username, &body.password).await?;
             let session = Session::create(user, &*crypto);
             info!(log, "Logging in"; &session);
             Ok(Response::builder()
-                .status(StatusCode::OK)
+                .status(StatusCode::SEE_OTHER)
+                .header(LOCATION, "/")
                 .header(SET_COOKIE, session.cookie_login().to_string())
                 .body(Body::empty())
                 .unwrap())

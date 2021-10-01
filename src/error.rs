@@ -16,8 +16,6 @@ pub enum Error {
         source: std::env::VarError,
         backtrace: Backtrace,
     },
-    #[error("JSON deserialization error")]
-    Json(#[from] serde_json::Error, Backtrace),
     #[error("IO error")]
     Io(#[from] std::io::Error, Backtrace),
     #[error("HTML templating error")]
@@ -34,6 +32,8 @@ pub enum Error {
     CryptoSignatureVerification(#[from] MacError, Backtrace),
     #[error("uuid parse error")]
     UuidParse(#[from] uuid::Error, Backtrace),
+    #[error("url encoding deserialization error")]
+    UrlEncoding(#[from] serde_urlencoded::de::Error, Backtrace),
 }
 
 impl Error {

@@ -6,6 +6,27 @@
         <title>Authtown</title>
     </head>
     <body>
-        Hello, world!
+        <h1>Authtown</h1>
+
+        {% if user %}
+            Logged in as [{{ user.id }}].
+        {% else %}
+            Not logged in.
+        {% endif %}
+
+        <h2>Register new user</h2>
+        <form action="/auth/register" method="post">
+            <div>
+                <label for="register-username">Username:</label>
+                <input type="text" name="username" id="register-username" required>
+            </div>
+            <div>
+                <label for="register-password">Password:</label>
+                <input type="password" name="password" id="register-password" required>
+            </div>
+            <div>
+                <input type="submit" value="Register">
+            </div>
+        </form>
     </body>
 </html>
