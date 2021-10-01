@@ -1,12 +1,15 @@
 use crate::error::Error;
 use crate::user::User;
 use cookie::{Cookie, SameSite};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::time::Duration;
 
+#[derive(Deserialize, Serialize)]
+#[serde(transparent)]
 pub struct Session {
-    pub user: User,
+    user: User,
 }
 
 const EXPIRATION_TIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
@@ -14,10 +17,11 @@ const EXPIRATION_TIME: Duration = Duration::from_secs(60 * 60 * 24 * 30);
 impl Session {
     pub fn from_cookies(cookies: &HashMap<&str, Cookie>) -> Result<Option<Session>, Error> {
         let Some(cookie) = cookies.get("session") else { return Ok(None); };
-        let user_id = cookie.value().parse()?;
-        Ok(Some(Session {
-            user: User { id: user_id },
-        }))
+        Ok(Some(serde_json::from_str(cookie.value())?))
+    }
+
+    pub fn create(user: User) -> Session {
+        Session { user }
     }
 
     pub fn cookie_login(&self) -> Cookie {
@@ -32,10 +36,10 @@ impl Session {
 impl slog::KV for Session {
     fn serialize(
         &self,
-        _record: &slog::Record,
+        record: &slog::Record,
         serializer: &mut dyn slog::Serializer,
     ) -> slog::Result {
-        serializer.emit_i32("session", self.user.id)
+        slog::Value::serialize(&self.user, record, "session", serializer)
     }
 }
 
@@ -45,7 +49,9 @@ fn cookie_raw(session: Option<&Session>, max_age: Duration) -> Cookie {
     // TODO: Encrypt the cookie, or store sessions in the database.
     Cookie::build(
         "session",
-        session.map_or(String::new(), |session| session.user.id.to_string()),
+        session
+            .map_or(Ok(String::new()), serde_json::to_string)
+            .unwrap(),
     )
     .max_age(max_age.try_into().unwrap())
     .secure(true)

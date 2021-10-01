@@ -126,7 +126,7 @@ async fn router(
             info!(log, "Registering a new account"; "username" => &body.username);
             let user_store = UserStore::new(&*database);
             let user = user_store.insert(&body.username, &body.password).await?;
-            let session = Session { user };
+            let session = Session::create(user);
             info!(log, "Logging in"; &session);
             Ok(Response::builder()
                 .status(StatusCode::OK)
