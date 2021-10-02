@@ -1,4 +1,4 @@
-#![feature(backtrace, let_else)]
+#![feature(backtrace, let_else, once_cell)]
 
 mod crypto;
 mod error;
@@ -16,12 +16,17 @@ use hyper::header::{COOKIE, LOCATION, SET_COOKIE};
 use hyper::server::conn::AddrStream;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use prometheus::{
+    register_histogram_vec, register_int_counter_vec, Encoder, HistogramVec, IntCounterVec,
+};
 use serde::{Deserialize, Serialize};
 use slog::{error, info, o, Drain, Logger};
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::lazy::SyncLazy;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tera::Tera;
 use tokio_postgres::NoTls;
 use uuid::Uuid;
@@ -47,6 +52,23 @@ struct Ctx {
 struct CtxUser {
     id: i32,
 }
+
+static METRIC_HTTP_REQUEST_COUNT: SyncLazy<IntCounterVec> = SyncLazy::new(|| {
+    register_int_counter_vec!(
+        "authtown_http_request_count",
+        "Number of HTTP requests received",
+        &["method", "endpoint"]
+    )
+    .unwrap()
+});
+static METRIC_HTTP_REQUEST_LATENCY: SyncLazy<HistogramVec> = SyncLazy::new(|| {
+    register_histogram_vec!(
+        "authtown_http_request_latency",
+        "Latency of HTTP requests",
+        &["method", "endpoint"]
+    )
+    .unwrap()
+});
 
 fn main() {
     let log = init_logger();
@@ -88,10 +110,23 @@ async fn run(log: Logger) -> Result<(), Error> {
         let conn_ip = conn.remote_addr().ip();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
+                let start_time = Instant::now();
+                let req_method_str = req.method().to_string();
+                let req_path_str = req.uri().path().to_owned();
                 let req_id = Uuid::new_v4();
                 let req_log = log.new(o!("request" => req_id.to_string()));
-                info!(req_log, "HTTP request received"; "method" => req.method().to_string(), "endpoint" => req.uri().to_string(), "ip" => conn_ip.to_string());
-                catcher(req, database.clone(), tera.clone(), crypto.clone(), req_log)
+                info!(req_log, "HTTP request received"; "method" => req.method().as_str(), "endpoint" => req.uri().path(), "ip" => conn_ip.to_string());
+                let database = database.clone();
+                let tera = tera.clone();
+                let crypto = crypto.clone();
+                async move {
+                    let response = catcher(req, database, tera, crypto, req_log).await;
+                    let finish_time = Instant::now();
+                    METRIC_HTTP_REQUEST_LATENCY
+                        .with_label_values(&[req_method_str.as_str(), req_path_str.as_str()])
+                        .observe((finish_time - start_time).as_nanos() as f64);
+                    Ok::<_, Infallible>(response)
+                }
             }))
         }
     });
@@ -107,18 +142,18 @@ async fn catcher(
     tera: Arc<Tera>,
     crypto: Arc<Crypto>,
     log: Logger,
-) -> Result<Response<Body>, Error> {
+) -> Response<Body> {
     match router(req, database, tera, crypto, &log).await {
         Ok(resp) => {
             info!(log, "HTTP request successful"; "status" => resp.status().as_u16());
-            Ok(resp)
+            resp
         }
         Err(e) => {
             error!(log, "HTTP request failed"; "status" => 500, e.log_message(), e.log_backtrace());
-            Ok(Response::builder()
+            Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(e.to_string().into())
-                .unwrap())
+                .unwrap()
         }
     }
 }
@@ -130,6 +165,9 @@ async fn router(
     crypto: Arc<Crypto>,
     log: &Logger,
 ) -> Result<Response<Body>, Error> {
+    METRIC_HTTP_REQUEST_COUNT
+        .with_label_values(&[req.method().as_str(), req.uri().path()])
+        .inc();
     let cookies = get_cookies(&req)?;
     let session = Session::from_cookies(&cookies, &*crypto)?;
     if let Some(session) = &session {
@@ -186,6 +224,17 @@ async fn router(
                 .header(LOCATION, "/")
                 .header(SET_COOKIE, Session::cookie_logout().to_string())
                 .body(Body::empty())
+                .unwrap())
+        }
+        (&Method::GET, "/metrics") => {
+            info!(log, "Scrapping metrics");
+            let encoder = prometheus::TextEncoder::new();
+            let families = prometheus::gather();
+            let mut buffer = Vec::new();
+            encoder.encode(&families, &mut buffer).unwrap();
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(buffer.into())
                 .unwrap())
         }
         _ => Ok(Response::builder()
