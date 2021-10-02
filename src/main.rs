@@ -32,6 +32,12 @@ struct AuthRegisterRequest {
     password: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct AuthLoginRequest {
+    username: String,
+    password: String,
+}
+
 #[derive(Serialize)]
 struct Ctx {
     user: Option<CtxUser>,
@@ -148,7 +154,24 @@ async fn router(
             let user_store = UserStore::new(&*database);
             let user = user_store.insert(&body.username, &body.password).await?;
             let session = Session::create(user, &*crypto);
-            info!(log, "Logging in"; &session);
+            info!(log, "Logged in after registration"; &session);
+            Ok(Response::builder()
+                .status(StatusCode::SEE_OTHER)
+                .header(LOCATION, "/")
+                .header(SET_COOKIE, session.cookie_login().to_string())
+                .body(Body::empty())
+                .unwrap())
+        }
+        (&Method::POST, "/auth/login") => {
+            let body_bytes = hyper::body::to_bytes(req.body_mut()).await?;
+            let body: AuthLoginRequest = serde_urlencoded::from_bytes(&body_bytes)?;
+            info!(log, "Logging in"; "username" => &body.username);
+            let user_store = UserStore::new(&*database);
+            let user = user_store
+                .get_and_verify(&body.username, &body.password)
+                .await?;
+            let session = Session::create(user, &*crypto);
+            info!(log, "Logged in"; user, &session);
             Ok(Response::builder()
                 .status(StatusCode::SEE_OTHER)
                 .header(LOCATION, "/")
@@ -159,7 +182,8 @@ async fn router(
         (&Method::POST, "/auth/logout") => {
             info!(log, "Logging out");
             Ok(Response::builder()
-                .status(StatusCode::OK)
+                .status(StatusCode::SEE_OTHER)
+                .header(LOCATION, "/")
                 .header(SET_COOKIE, Session::cookie_logout().to_string())
                 .body(Body::empty())
                 .unwrap())
